@@ -1,51 +1,80 @@
-// src/hooks/useWorkers.js
-import { useEffect, useState } from "react";
-import {
-  collection,
-  query,
-  onSnapshot,
-  setDoc,
-  doc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { createUserWithEmailAndPassword } from "firebase/auth";
-import { auth, db } from "../services/firebaseConfig";
+import { useState, useEffect, useCallback } from "react";
+import { supabase } from "../lib/supabase";
+import { useAuth } from "../context/AuthContext";
 
-// ---------------------------------------------------------------------------
-// Real-time listener for all workers
-// ---------------------------------------------------------------------------
 export function useWorkers() {
   const [workers, setWorkers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const { getToken } = useAuth();
+
+  const fetchWorkers = useCallback(async () => {
+    try {
+      setLoading(true);
+      const token = await getToken();
+      const res = await fetch("/api/workers", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) throw new Error("Failed to fetch workers");
+      const data = await res.json();
+      setWorkers(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [getToken]);
 
   useEffect(() => {
-    const q = query(collection(db, "workers"));
-    const unsub = onSnapshot(q, (snap) => {
-      setWorkers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    });
-    return () => unsub();
-  }, []);
+    fetchWorkers();
+  }, [fetchWorkers]);
 
-  return { workers, loading };
+  // Realtime
+  useEffect(() => {
+    const channel = supabase
+      .channel("workers-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "workers" }, () => {
+        fetchWorkers();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchWorkers]);
+
+  return { workers, loading, error, refetch: fetchWorkers };
 }
 
-// ---------------------------------------------------------------------------
-// Create a new worker (Firebase Auth account + Firestore profile)
-// ---------------------------------------------------------------------------
-export async function createWorker({ name, email, password, zone, phone }) {
-  // Create Firebase Auth account for the worker
-  const cred = await createUserWithEmailAndPassword(auth, email, password);
-  // Save worker profile to Firestore
-  await setDoc(doc(db, "workers", cred.user.uid), {
-    name,
-    email,
-    phone,
-    zone,
-    isAvailable: true,
-    assignedTasks: [],
-    completedTasks: [],
-    createdAt: serverTimestamp(),
+export async function createWorker(token, workerData) {
+  const res = await fetch("/api/create-worker", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(workerData),
   });
-  return cred.user.uid;
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || "Failed to create worker");
+  }
+
+  return res.json();
+}
+
+export async function toggleWorkerAvailability(token, workerId, isAvailable) {
+  const res = await fetch(`/api/workers?id=${workerId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ is_available: isAvailable }),
+  });
+
+  if (!res.ok) throw new Error("Failed to update availability");
+  return res.json();
 }

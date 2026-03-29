@@ -10,16 +10,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@clerk/backend": "^3.2.3",
+    "@clerk/clerk-react": "^5.61.4",
     "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "^5.22.0",
     "@supabase/supabase-js": "^2.99.0",
     "@tailwindcss/vite": "^4.1.13",
     "axios": "^1.12.2",
+    "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
-    "firebase": "^12.10.0",
-    "jotai": "^2.14.0",
     "leaflet": "^1.9.4",
-    "leva": "^0.10.0",
     "lucide-react": "^0.544.0",
+    "prisma": "^5.22.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-dropzone": "^15.0.0",
@@ -27,7 +29,10 @@
     "react-leaflet": "^5.0.0",
     "react-responsive": "^10.0.1",
     "react-router-dom": "^7.9.1",
-    "recharts": "^3.2.1"
+    "recharts": "^3.2.1",
+    "resend": "^6.9.4",
+    "svix": "^1.89.0",
+    "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
@@ -36,6 +41,7 @@
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.21",
+    "dotenv": "^17.3.1",
     "eslint": "^9.33.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",

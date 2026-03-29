@@ -1,78 +1,69 @@
-// src/hooks/useWorkerTasks.js
-import { useEffect, useState } from "react";
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  doc,
-  getDoc,
-  updateDoc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { db } from "../services/firebaseConfig";
+import { useState, useEffect, useCallback } from "react";
+import { supabase } from "../lib/supabase";
+import { useAuth } from "../context/AuthContext";
 
-// ---------------------------------------------------------------------------
-// Real-time listener for tasks assigned to a specific worker
-// Also fetches the linked report doc for each task
-// ---------------------------------------------------------------------------
 export function useWorkerTasks(workerId) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const { getToken } = useAuth();
+
+  const fetchTasks = useCallback(async () => {
+    if (!workerId) return;
+    try {
+      setLoading(true);
+      const token = await getToken();
+      const res = await fetch(`/api/tasks?worker_id=${workerId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) throw new Error("Failed to fetch tasks");
+      const data = await res.json();
+      setTasks(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [workerId, getToken]);
 
   useEffect(() => {
-    if (!workerId) {
-      setTasks([]);
-      setLoading(false);
-      return;
-    }
+    fetchTasks();
+  }, [fetchTasks]);
 
-    const q = query(
-      collection(db, "tasks"),
-      where("assignedTo", "==", workerId)
-    );
+  // Realtime
+  useEffect(() => {
+    if (!workerId) return;
 
-    const unsub = onSnapshot(q, async (snap) => {
-      const taskDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const channel = supabase
+      .channel(`tasks-worker-${workerId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "tasks", filter: `worker_id=eq.${workerId}` },
+        () => {
+          fetchTasks();
+        }
+      )
+      .subscribe();
 
-      // Fetch linked report for each task
-      const enriched = await Promise.all(
-        taskDocs.map(async (task) => {
-          let report = null;
-          if (task.reportId) {
-            try {
-              const reportSnap = await getDoc(doc(db, "reports", task.reportId));
-              if (reportSnap.exists()) {
-                report = { id: reportSnap.id, ...reportSnap.data() };
-              }
-            } catch (err) {
-              console.warn("Failed to fetch report for task:", task.id, err);
-            }
-          }
-          return { ...task, report };
-        })
-      );
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [workerId, fetchTasks]);
 
-      setTasks(enriched);
-      setLoading(false);
-    });
-
-    return () => unsub();
-  }, [workerId]);
-
-  return { tasks, loading };
+  return { tasks, loading, error, refetch: fetchTasks };
 }
 
-// ---------------------------------------------------------------------------
-// Update task status + optionally attach after-image URL
-// ---------------------------------------------------------------------------
-export async function updateTaskStatus(taskId, status, afterImageURL) {
-  const updates = {
-    status,
-    updatedAt: serverTimestamp(),
-  };
-  if (afterImageURL) {
-    updates.afterImageURL = afterImageURL;
-  }
-  await updateDoc(doc(db, "tasks", taskId), updates);
+export async function updateTaskStatus(token, taskId, status, extras = {}) {
+  const res = await fetch(`/api/tasks?id=${taskId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ status, ...extras }),
+  });
+
+  if (!res.ok) throw new Error("Failed to update task");
+  return res.json();
 }

@@ -1,223 +1,198 @@
-// src/pages/worker/WorkerDashboard.jsx
-import { useState, useRef } from "react";
+import { useState } from "react";
+import {
+  ClipboardList, Loader2, Play, CheckCircle2,
+  AlertTriangle, Navigation, Upload, X, MapPin, Clock,
+} from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
-import {
-  useWorkerTasks,
-  updateTaskStatus,
-} from "../../hooks/useWorkerTasks";
-import { uploadImage } from "../../utils/uploadImage";
-import {
-  FaClipboardCheck,
-  FaSpinner,
-  FaPlay,
-  FaCheckCircle,
-  FaCamera,
-  FaExclamationTriangle,
-} from "react-icons/fa";
+import { useWorkerTasks, updateTaskStatus } from "../../hooks/useWorkerTasks";
+import { uploadToSupabase, timeAgo, capitalize } from "../../lib/utils";
+import { supabase } from "../../lib/supabase";
+import { CATEGORY_COLORS } from "../../lib/constants";
 
-const CATEGORY_ICONS = {
-  pothole: "🕳️",
-  garbage: "🗑️",
-  streetlight: "💡",
-  flooding: "🌊",
-  vandalism: "🔨",
+const PRIORITY_BADGE = {
+  critical: "bg-red-500/20 text-red-300 ring-1 ring-red-500/30",
+  high:     "bg-orange-500/20 text-orange-300 ring-1 ring-orange-500/30",
+  medium:   "bg-yellow-500/20 text-yellow-300 ring-1 ring-yellow-500/30",
+  low:      "bg-slate-500/20 text-slate-300 ring-1 ring-slate-500/30",
 };
 
-const PRIORITY_COLORS = {
-  critical: "bg-red-100 text-red-800",
-  high: "bg-orange-100 text-orange-800",
-  medium: "bg-yellow-100 text-yellow-800",
-  low: "bg-green-100 text-green-800",
-};
-
-const STATUS_COLORS = {
-  assigned: "bg-blue-100 text-blue-800",
-  in_progress: "bg-purple-100 text-purple-800",
-  done: "bg-green-100 text-green-800",
+const STATUS_CONFIG = {
+  assigned:    { dot: "bg-blue-400",  label: "Assigned",    badge: "bg-blue-500/15 text-blue-300" },
+  in_progress: { dot: "bg-amber-400", label: "In Progress", badge: "bg-amber-500/15 text-amber-300" },
 };
 
 export default function WorkerDashboard() {
-  const { user } = useAuth();
-  const { tasks, loading } = useWorkerTasks(user?.uid);
+  const { user, getToken } = useAuth();
+  const { tasks, loading } = useWorkerTasks(user?.id);
   const [actionLoading, setActionLoading] = useState(null);
-  const [uploadModal, setUploadModal] = useState(null); // taskId being completed
-  const fileInputRef = useRef(null);
+  const [showUploadModal, setShowUploadModal] = useState(null);
+  const [afterFile, setAfterFile] = useState(null);
 
-  const totalAssigned = tasks.length;
+  const assigned   = tasks.filter((t) => t.status === "assigned").length;
   const inProgress = tasks.filter((t) => t.status === "in_progress").length;
-  const completedToday = tasks.filter((t) => {
-    if (t.status !== "done" || !t.updatedAt?.toDate) return false;
-    return t.updatedAt.toDate().toDateString() === new Date().toDateString();
-  }).length;
+  const today      = new Date().toISOString().split("T")[0];
+  const doneToday  = tasks.filter((t) => t.status === "completed" && t.completed_at?.startsWith(today)).length;
 
-  const handleStartTask = async (taskId) => {
-    setActionLoading(taskId);
+  const handleStart = async (taskId) => {
+    setActionLoading(`start-${taskId}`);
     try {
-      await updateTaskStatus(taskId, "in_progress");
-    } catch (err) {
-      console.error("Failed to start task:", err);
-    } finally {
-      setActionLoading(null);
-    }
+      const token = await getToken();
+      await updateTaskStatus(token, taskId, "in_progress", { started_at: new Date().toISOString() });
+    } finally { setActionLoading(null); }
   };
 
-  const handleCompleteTask = (taskId) => {
-    setUploadModal(taskId);
+  const handleEscalate = async (taskId) => {
+    setActionLoading(`escalate-${taskId}`);
+    try {
+      const token = await getToken();
+      await updateTaskStatus(token, taskId, "escalated");
+    } finally { setActionLoading(null); }
   };
 
-  const handleUploadAndComplete = async (taskId, file) => {
-    setActionLoading(taskId);
-    setUploadModal(null);
+  const handleComplete = async (taskId) => {
+    setActionLoading(`complete-${taskId}`);
     try {
-      let afterURL = null;
-      if (file) {
-        afterURL = await uploadImage(file, "task-completions");
+      const token = await getToken();
+      let afterUrl = null;
+      if (afterFile) {
+        afterUrl = await uploadToSupabase(supabase, afterFile, "completion-images", "after");
       }
-      await updateTaskStatus(taskId, "done", afterURL);
-    } catch (err) {
-      console.error("Failed to complete task:", err);
-    } finally {
-      setActionLoading(null);
-    }
+      await updateTaskStatus(token, taskId, "completed", {
+        completed_at: new Date().toISOString(),
+        after_image: afterUrl,
+      });
+      setShowUploadModal(null);
+      setAfterFile(null);
+    } finally { setActionLoading(null); }
   };
 
-  const handleSkipPhoto = () => {
-    if (uploadModal) {
-      handleUploadAndComplete(uploadModal, null);
-    }
-  };
-
-  const handleFileSelect = (e) => {
-    const file = e.target.files?.[0];
-    if (file && uploadModal) {
-      handleUploadAndComplete(uploadModal, file);
-    }
-  };
-
-  if (loading)
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-amber-500" />
-      </div>
-    );
+  const activeTasks = tasks.filter((t) => t.status === "assigned" || t.status === "in_progress");
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold mb-6 text-gray-800">My Tasks</h1>
-
-      {/* ─── Stats row ─── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-xl shadow-md p-5 flex items-center space-x-4">
-          <FaClipboardCheck className="text-3xl text-blue-500" />
-          <div>
-            <p className="text-gray-500 text-sm">Total Assigned</p>
-            <p className="text-2xl font-bold">{totalAssigned}</p>
-          </div>
-        </div>
-        <div className="bg-white rounded-xl shadow-md p-5 flex items-center space-x-4">
-          <FaSpinner className="text-3xl text-purple-500" />
-          <div>
-            <p className="text-gray-500 text-sm">In Progress</p>
-            <p className="text-2xl font-bold">{inProgress}</p>
-          </div>
-        </div>
-        <div className="bg-white rounded-xl shadow-md p-5 flex items-center space-x-4">
-          <FaCheckCircle className="text-3xl text-green-500" />
-          <div>
-            <p className="text-gray-500 text-sm">Completed Today</p>
-            <p className="text-2xl font-bold">{completedToday}</p>
-          </div>
-        </div>
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-widest text-amber-400">Field Operations</p>
+        <h1 className="mt-1 text-2xl font-bold text-white">My Tasks</h1>
       </div>
 
-      {/* ─── Task list ─── */}
-      {tasks.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-md p-8 text-center">
-          <FaClipboardCheck className="text-5xl text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-500">No tasks assigned to you yet.</p>
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          { label: "Assigned", value: assigned, color: "text-blue-400", border: "border-blue-500/20", bg: "bg-blue-500/5" },
+          { label: "In Progress", value: inProgress, color: "text-amber-400", border: "border-amber-500/20", bg: "bg-amber-500/5" },
+          { label: "Done Today", value: doneToday, color: "text-emerald-400", border: "border-emerald-500/20", bg: "bg-emerald-500/5" },
+        ].map(({ label, value, color, border, bg }) => (
+          <div key={label} className={`rounded-2xl border ${border} ${bg} p-4`}>
+            <p className={`text-3xl font-bold ${color}`}>{value}</p>
+            <p className="mt-1 text-xs text-slate-400">{label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Task list */}
+      {loading ? (
+        <div className="flex h-64 items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-amber-400" />
+        </div>
+      ) : activeTasks.length === 0 ? (
+        <div className="rounded-2xl border border-slate-700 bg-slate-800 p-10 text-center">
+          <ClipboardList className="mx-auto h-10 w-10 text-slate-600" />
+          <p className="mt-3 font-medium text-slate-400">No active tasks right now</p>
+          <p className="mt-1 text-sm text-slate-600">New assignments will appear here</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {tasks.map((task) => {
-            const report = task.report;
-            const cat = report?.category || "unknown";
-            const priority = report?.aiPriority || report?.priority || "medium";
-
+        <div className="space-y-4">
+          {activeTasks.map((task) => {
+            const sc = STATUS_CONFIG[task.status] || STATUS_CONFIG.assigned;
+            const pri = task.report?.priority;
             return (
-              <div
-                key={task.id}
-                className="bg-white rounded-xl shadow-md p-5 hover:shadow-lg transition flex flex-col"
-              >
-                {/* Header */}
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-2xl">
-                      {CATEGORY_ICONS[cat] || "📌"}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="font-semibold text-gray-800 truncate">
-                        {report?.title || "Untitled Task"}
+              <div key={task.id} className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-800">
+                {/* Card body */}
+                <div className="flex gap-4 p-4">
+                  {task.report?.image_url ? (
+                    <img
+                      src={task.report.image_url}
+                      alt=""
+                      className="h-20 w-20 shrink-0 rounded-xl object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-xl bg-slate-700">
+                      <MapPin className="h-8 w-8 text-slate-500" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-semibold text-white">
+                      {task.report?.title || "Task"}
+                    </h3>
+                    {task.report?.description && (
+                      <p className="mt-1 text-sm text-slate-400 line-clamp-2">
+                        {task.report.description}
                       </p>
-                      <p className="text-xs text-gray-500">
-                        {report?.location?.address || "Unknown location"}
-                      </p>
+                    )}
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${sc.badge}`}>
+                        <span className={`mr-1 inline-block h-1.5 w-1.5 rounded-full ${sc.dot}`} />
+                        {sc.label}
+                      </span>
+                      {pri && (
+                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${PRIORITY_BADGE[pri] || PRIORITY_BADGE.low}`}>
+                          {capitalize(pri)}
+                        </span>
+                      )}
+                      <span className="flex items-center gap-1 text-xs text-slate-500">
+                        <Clock className="h-3 w-3" />
+                        {timeAgo(task.assigned_at)}
+                      </span>
                     </div>
                   </div>
-                  <span
-                    className={`text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap ${
-                      PRIORITY_COLORS[priority] || "bg-gray-100"
-                    }`}
-                  >
-                    {priority}
-                  </span>
                 </div>
 
-                {/* Status */}
-                <div className="mb-4">
-                  <span
-                    className={`text-xs px-2 py-1 rounded-full font-medium ${
-                      STATUS_COLORS[task.status] || "bg-gray-100"
-                    }`}
-                  >
-                    {task.status?.replace("_", " ") || "assigned"}
-                  </span>
-                </div>
-
-                {/* Action buttons */}
-                <div className="mt-auto flex gap-2">
+                {/* Actions */}
+                <div className="flex flex-wrap gap-2 border-t border-slate-700 bg-slate-900/60 px-4 py-3">
                   {task.status === "assigned" && (
                     <button
-                      onClick={() => handleStartTask(task.id)}
-                      disabled={actionLoading === task.id}
-                      className="flex items-center gap-1 px-4 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600 transition disabled:opacity-50"
+                      onClick={() => handleStart(task.id)}
+                      disabled={!!actionLoading}
+                      className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-400 disabled:opacity-50 cursor-pointer"
                     >
-                      {actionLoading === task.id ? (
-                        <FaSpinner className="animate-spin" />
+                      {actionLoading === `start-${task.id}` ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : (
-                        <FaPlay className="text-xs" />
+                        <Play className="h-3.5 w-3.5" />
                       )}
                       Start Task
                     </button>
                   )}
                   {task.status === "in_progress" && (
                     <button
-                      onClick={() => handleCompleteTask(task.id)}
-                      disabled={actionLoading === task.id}
-                      className="flex items-center gap-1 px-4 py-2 bg-green-500 text-white text-sm rounded-lg hover:bg-green-600 transition disabled:opacity-50"
+                      onClick={() => setShowUploadModal(task.id)}
+                      disabled={!!actionLoading}
+                      className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
                     >
-                      {actionLoading === task.id ? (
-                        <FaSpinner className="animate-spin" />
-                      ) : (
-                        <FaCheckCircle />
-                      )}
+                      <CheckCircle2 className="h-3.5 w-3.5" />
                       Mark Complete
                     </button>
                   )}
-                  {task.status === "done" && (
-                    <span className="flex items-center gap-1 text-green-600 text-sm font-medium">
-                      <FaCheckCircle /> Completed
-                    </span>
+                  {task.report?.lat && task.report?.lng && (
+                    <a
+                      href={`https://www.google.com/maps/dir/?api=1&destination=${task.report.lat},${task.report.lng}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 rounded-xl border border-slate-600 bg-slate-800 px-3.5 py-1.5 text-xs font-semibold text-blue-400 transition-colors hover:bg-slate-700 cursor-pointer"
+                    >
+                      <Navigation className="h-3.5 w-3.5" />
+                      Navigate
+                    </a>
                   )}
+                  <button
+                    onClick={() => handleEscalate(task.id)}
+                    disabled={!!actionLoading}
+                    className="flex items-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/5 px-3.5 py-1.5 text-xs font-semibold text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-50 cursor-pointer"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Escalate
+                  </button>
                 </div>
               </div>
             );
@@ -225,46 +200,46 @@ export default function WorkerDashboard() {
         </div>
       )}
 
-      {/* ─── Upload modal ─── */}
-      {uploadModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
-          <div className="bg-white rounded-xl shadow-2xl p-6 w-96 max-w-[90%]">
-            <h3 className="text-lg font-semibold text-gray-800 mb-2">
-              Upload "After" Photo
-            </h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Take a photo showing the issue has been resolved.
-            </p>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              onChange={handleFileSelect}
-              className="hidden"
-            />
-
-            <div className="flex flex-col gap-2">
+      {/* Upload modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-800 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-white">Complete Task</h2>
               <button
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center justify-center gap-2 w-full py-3 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition font-medium"
+                onClick={() => { setShowUploadModal(null); setAfterFile(null); }}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-700 hover:text-white cursor-pointer"
               >
-                <FaCamera /> Choose / Take Photo
-              </button>
-              <button
-                onClick={handleSkipPhoto}
-                className="w-full py-2 text-gray-500 hover:text-gray-700 text-sm transition"
-              >
-                Skip — complete without photo
-              </button>
-              <button
-                onClick={() => setUploadModal(null)}
-                className="w-full py-2 text-gray-400 hover:text-gray-600 text-sm transition"
-              >
-                Cancel
+                <X className="h-4 w-4" />
               </button>
             </div>
+            <p className="mb-4 text-sm text-slate-400">
+              Upload a photo of the completed work (optional but recommended).
+            </p>
+            <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-600 p-6 transition-colors hover:border-amber-500/50 hover:bg-amber-500/5">
+              <Upload className="h-6 w-6 text-slate-500" />
+              <span className="text-sm text-slate-400">
+                {afterFile ? afterFile.name : "Tap to choose photo"}
+              </span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => setAfterFile(e.target.files?.[0])}
+              />
+            </label>
+            <button
+              onClick={() => handleComplete(showUploadModal)}
+              disabled={!!actionLoading}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
+            >
+              {actionLoading?.startsWith("complete-") ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4" />
+              )}
+              Confirm Completion
+            </button>
           </div>
         </div>
       )}

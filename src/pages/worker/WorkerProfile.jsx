@@ -1,141 +1,141 @@
-// src/pages/worker/WorkerProfile.jsx
-import { useEffect, useState } from "react";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
-import { db } from "../../services/firebaseConfig";
+import { useState, useEffect } from "react";
+import { Loader2, MapPin, Phone, Shield, CheckCircle2, ClipboardList } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
-import {
-  FaUserCircle,
-  FaEnvelope,
-  FaMapMarkerAlt,
-  FaCheckCircle,
-  FaToggleOn,
-  FaToggleOff,
-} from "react-icons/fa";
+import { toggleWorkerAvailability } from "../../hooks/useWorkers";
 
 export default function WorkerProfile() {
-  const { user } = useAuth();
-  const [profile, setProfile] = useState(null);
+  const { user, getToken } = useAuth();
+  const [worker, setWorker] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
 
   useEffect(() => {
-    if (!user?.uid) return;
-    (async () => {
-      const snap = await getDoc(doc(db, "workers", user.uid));
-      if (snap.exists()) {
-        setProfile({ id: snap.id, ...snap.data() });
+    async function fetchProfile() {
+      try {
+        const token = await getToken();
+        const res = await fetch(`/api/workers?id=${user.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setWorker(Array.isArray(data) ? data[0] : data);
+        }
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
-    })();
-  }, [user?.uid]);
+    }
+    if (user) fetchProfile();
+  }, [user, getToken]);
 
-  const toggleAvailability = async () => {
-    if (!profile) return;
+  const handleToggle = async () => {
+    if (!worker) return;
     setToggling(true);
     try {
-      const newVal = !profile.isAvailable;
-      await updateDoc(doc(db, "workers", profile.id), {
-        isAvailable: newVal,
-      });
-      setProfile((p) => ({ ...p, isAvailable: newVal }));
-    } catch (err) {
-      console.error("Failed to toggle availability:", err);
+      const token = await getToken();
+      await toggleWorkerAvailability(token, worker.id, !worker.is_available);
+      setWorker({ ...worker, is_available: !worker.is_available });
     } finally {
       setToggling(false);
     }
   };
 
-  if (loading)
+  if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-amber-500" />
+      <div className="flex h-64 items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-amber-400" />
       </div>
     );
+  }
 
-  if (!profile)
-    return (
-      <div className="text-center py-12">
-        <p className="text-gray-500">Worker profile not found.</p>
-      </div>
-    );
+  const initial = (worker?.profile?.full_name || user?.fullName || "W").charAt(0).toUpperCase();
+  const fullName = worker?.profile?.full_name || user?.fullName || "Worker";
+  const email = worker?.profile?.email || user?.primaryEmailAddress?.emailAddress;
 
   return (
-    <div className="max-w-lg mx-auto">
-      <h1 className="text-2xl font-bold mb-6 text-gray-800">My Profile</h1>
+    <div className="mx-auto max-w-md space-y-5">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-widest text-amber-400">Field Ops</p>
+        <h1 className="mt-1 text-2xl font-bold text-white">Profile</h1>
+      </div>
 
-      <div className="bg-white rounded-xl shadow-md p-6">
-        {/* Avatar area */}
-        <div className="flex items-center gap-4 mb-6 pb-6 border-b border-gray-100">
-          {user?.photoURL ? (
-            <img
-              src={user.photoURL}
-              alt="avatar"
-              className="w-16 h-16 rounded-full border-2 border-amber-400"
-            />
-          ) : (
-            <FaUserCircle className="text-6xl text-gray-300" />
-          )}
+      {/* Identity card */}
+      <div className="rounded-2xl border border-slate-700 bg-slate-800 p-6">
+        <div className="flex items-center gap-4">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500/20 text-2xl font-black text-amber-400 ring-2 ring-amber-500/30">
+            {initial}
+          </div>
           <div>
-            <p className="text-xl font-semibold text-gray-800">
-              {profile.name || user?.displayName || "Worker"}
+            <h2 className="text-xl font-bold text-white">{fullName}</h2>
+            <p className="text-sm text-slate-400">{email}</p>
+            <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-400 ring-1 ring-amber-500/20">
+              Field Worker
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 gap-3">
+        {[
+          { label: "Active Tasks", value: worker?.active_task_count ?? 0, icon: ClipboardList, color: "text-amber-400", bg: "bg-amber-500/10" },
+          { label: "Completed", value: worker?.total_completed ?? 0, icon: CheckCircle2, color: "text-emerald-400", bg: "bg-emerald-500/10" },
+        ].map(({ label, value, icon: Icon, color, bg }) => (
+          <div key={label} className="rounded-2xl border border-slate-700 bg-slate-800 p-4">
+            <div className={`mb-2 inline-flex rounded-xl p-2 ${bg}`}>
+              <Icon className={`h-4 w-4 ${color}`} />
+            </div>
+            <p className={`text-2xl font-bold ${color}`}>{value}</p>
+            <p className="text-xs text-slate-400">{label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Details */}
+      <div className="rounded-2xl border border-slate-700 bg-slate-800 p-5">
+        <h3 className="mb-4 text-sm font-semibold text-slate-300">Details</h3>
+        <div className="space-y-3">
+          <div className="flex items-center gap-3 text-sm">
+            <MapPin className="h-4 w-4 shrink-0 text-slate-500" />
+            <div>
+              <p className="text-xs text-slate-500">Zone</p>
+              <p className="font-medium text-white">{worker?.zone || "Not assigned"}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-sm">
+            <Phone className="h-4 w-4 shrink-0 text-slate-500" />
+            <div>
+              <p className="text-xs text-slate-500">Phone</p>
+              <p className="font-medium text-white">{worker?.profile?.phone || "—"}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-sm">
+            <Shield className="h-4 w-4 shrink-0 text-slate-500" />
+            <div>
+              <p className="text-xs text-slate-500">Role</p>
+              <p className="font-medium text-white">Field Worker</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Availability toggle */}
+      <div className={`rounded-2xl border p-5 transition-colors ${worker?.is_available ? "border-emerald-500/30 bg-emerald-500/5" : "border-slate-700 bg-slate-800"}`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="font-semibold text-white">Availability</p>
+            <p className="mt-0.5 text-sm text-slate-400">
+              {worker?.is_available ? "Accepting new task assignments" : "Not accepting new tasks"}
             </p>
-            <p className="text-sm text-gray-500">Field Worker</p>
           </div>
-        </div>
-
-        {/* Info rows */}
-        <div className="space-y-4">
-          <div className="flex items-center gap-3">
-            <FaEnvelope className="text-gray-400" />
-            <div>
-              <p className="text-xs text-gray-400">Email</p>
-              <p className="text-gray-700">{profile.email || user?.email}</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <FaMapMarkerAlt className="text-gray-400" />
-            <div>
-              <p className="text-xs text-gray-400">Zone</p>
-              <p className="text-gray-700">{profile.zone || "Not assigned"}</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <FaCheckCircle className="text-gray-400" />
-            <div>
-              <p className="text-xs text-gray-400">Completed Tasks</p>
-              <p className="text-gray-700 font-semibold">
-                {profile.completedTasks?.length || 0}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Availability toggle */}
-        <div className="mt-6 pt-6 border-t border-gray-100">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="font-medium text-gray-800">Availability</p>
-              <p className="text-xs text-gray-500">
-                {profile.isAvailable
-                  ? "You are visible for new task assignments"
-                  : "You won't receive new task assignments"}
-              </p>
-            </div>
-            <button
-              onClick={toggleAvailability}
-              disabled={toggling}
-              className="text-4xl transition disabled:opacity-50"
-              aria-label="Toggle availability"
-            >
-              {profile.isAvailable ? (
-                <FaToggleOn className="text-green-500 hover:text-green-600" />
-              ) : (
-                <FaToggleOff className="text-gray-400 hover:text-gray-500" />
-              )}
-            </button>
-          </div>
+          <button
+            onClick={handleToggle}
+            disabled={toggling}
+            className={`relative h-7 w-12 rounded-full transition-all duration-200 disabled:opacity-60 cursor-pointer ${worker?.is_available ? "bg-emerald-500" : "bg-slate-600"}`}
+          >
+            <span
+              className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-md transition-transform duration-200 ${worker?.is_available ? "translate-x-5" : "translate-x-0.5"}`}
+            />
+          </button>
         </div>
       </div>
     </div>

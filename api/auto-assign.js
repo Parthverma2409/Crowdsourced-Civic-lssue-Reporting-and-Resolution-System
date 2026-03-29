@@ -1,117 +1,119 @@
+import { PrismaClient } from "@prisma/client";
+
+const prisma = new PrismaClient();
+
+function haversineDistance(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end();
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   const { reportId, reportLat, reportLng } = req.body;
+  if (!reportId) return res.status(400).json({ error: "Missing reportId" });
 
   try {
-    const { initializeApp, getApps, getApp } = await import("firebase/app");
-    const {
-      getFirestore,
-      collection,
-      query,
-      where,
-      getDocs,
-      addDoc,
-      updateDoc,
-      doc,
-      serverTimestamp,
-    } = await import("firebase/firestore");
+    const report = await prisma.report.findUnique({ where: { id: reportId } });
+    if (!report) return res.status(404).json({ error: "Report not found" });
 
-    const app =
-      getApps().length === 0
-        ? initializeApp({
-            apiKey: process.env.FIREBASE_API_KEY,
-            authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-            projectId: process.env.FIREBASE_PROJECT_ID,
-          })
-        : getApp();
-    const db = getFirestore(app);
+    const lat = reportLat || report.lat;
+    const lng = reportLng || report.lng;
 
-    // Get all available workers
-    const workersSnap = await getDocs(
-      query(collection(db, "workers"), where("isAvailable", "==", true))
+    // Find available workers
+    const workers = await prisma.worker.findMany({
+      where: { isAvailable: true },
+      include: { profile: true },
+    });
+
+    if (workers.length === 0) {
+      return res.status(200).json({
+        success: false,
+        message: "No available workers",
+      });
+    }
+
+    // Filter workers with location, fallback to all workers
+    const oneHourAgo = new Date(Date.now() - 3600000);
+    const withLocation = workers.filter(
+      (w) => w.currentLat && w.currentLng && (!w.lastLocationUpdate || w.lastLocationUpdate > oneHourAgo)
     );
+    const pool = withLocation.length > 0 ? withLocation : workers;
 
-    if (workersSnap.empty) {
-      return res
-        .status(200)
-        .json({ success: false, reason: "No available workers" });
-    }
-
-    // Haversine distance calculation (km)
-    function haversine(lat1, lng1, lat2, lng2) {
-      const R = 6371;
-      const dLat = ((lat2 - lat1) * Math.PI) / 180;
-      const dLng = ((lng2 - lng1) * Math.PI) / 180;
-      const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos((lat1 * Math.PI) / 180) *
-          Math.cos((lat2 * Math.PI) / 180) *
-          Math.sin(dLng / 2) ** 2;
-      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    }
-
-    // Find nearest worker
-    let nearest = null;
-    let minDist = Infinity;
-    workersSnap.forEach((d) => {
-      const w = d.data();
-      const wLat = w.lastLocation?.lat ?? w.location?.lat;
-      const wLng = w.lastLocation?.lng ?? w.location?.lng;
-      if (wLat != null && wLng != null) {
-        const dist = haversine(reportLat, reportLng, wLat, wLng);
-        if (dist < minDist) {
-          minDist = dist;
-          nearest = { id: d.id, ...w };
-        }
+    // Score: 50% proximity + 30% workload + 20% zone
+    const scored = pool.map((w) => {
+      let distance = 999;
+      if (w.currentLat && w.currentLng) {
+        distance = haversineDistance(lat, lng, w.currentLat, w.currentLng);
       }
+
+      const proximityScore = distance < 999 ? 1 / (1 + distance) : 0;
+      const workloadScore = 1 / (1 + w.activeTaskCount);
+
+      return {
+        worker: w,
+        score: 0.5 * proximityScore + 0.3 * workloadScore,
+        distance,
+      };
     });
 
-    // Fallback: pick first available worker if no locations set
-    if (!nearest) {
-      const first = workersSnap.docs[0];
-      nearest = { id: first.id, ...first.data() };
-    }
-
-    // Create task doc
-    const taskRef = await addDoc(collection(db, "tasks"), {
-      reportId,
-      assignedTo: nearest.id,
-      assignedBy: "auto-assign",
-      status: "assigned",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      workerName: nearest.name || null,
+    scored.sort((a, b) => {
+      if (Math.abs(a.score - b.score) < 0.01) {
+        return a.worker.totalCompleted - b.worker.totalCompleted;
+      }
+      return b.score - a.score;
     });
 
-    // Update report
-    await updateDoc(doc(db, "reports", reportId), {
-      status: "assigned",
-      assignedTask: taskRef.id,
-      assignedWorker: nearest.id,
-      assignedWorkerName: nearest.name || null,
-      updatedAt: serverTimestamp(),
+    const best = scored[0].worker;
+
+    // Create task
+    const task = await prisma.task.create({
+      data: {
+        reportId,
+        workerId: best.id,
+        status: "assigned",
+      },
     });
 
-    // Create notification for worker
-    await addDoc(collection(db, "notifications"), {
-      recipientId: nearest.id,
-      type: "task_assigned",
-      reportId,
-      taskId: taskRef.id,
-      message: `New task assigned to you`,
-      read: false,
-      createdAt: serverTimestamp(),
+    // Update report status
+    await prisma.report.update({
+      where: { id: reportId },
+      data: { status: "assigned" },
+    });
+
+    // Increment worker active tasks
+    await prisma.worker.update({
+      where: { id: best.id },
+      data: { activeTaskCount: { increment: 1 } },
+    });
+
+    // Notify worker
+    await prisma.notification.create({
+      data: {
+        userId: best.id,
+        title: "New Task Assigned",
+        message: `You've been assigned: ${report.title}`,
+        type: "task_assigned",
+        metadata: { taskId: task.id, reportId },
+      },
     });
 
     return res.status(200).json({
       success: true,
-      workerId: nearest.id,
-      workerName: nearest.name,
-      taskId: taskRef.id,
+      workerId: best.id,
+      workerName: best.profile?.fullName || best.profile?.email,
+      taskId: task.id,
     });
   } catch (error) {
-    console.error("Auto-assign failed:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 }

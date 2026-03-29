@@ -1,71 +1,107 @@
-// src/App.jsx
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "./context/AuthContext";
-import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import Reports from "./pages/Reports";
-import Analytics from "./pages/Analytics";
+import { lazy, Suspense } from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { ROLES } from "./lib/constants";
+import ProtectedRoute from "./components/layout/ProtectedRoute";
+
+// Auth & Landing
+const Landing = lazy(() => import("./pages/Landing"));
+const AuthPage = lazy(() => import("./pages/auth/AuthPage"));
+const SSOCallback = lazy(() => import("./pages/auth/SSOCallback"));
+
+// Helper portal
+const HelperLayout = lazy(() => import("./pages/helper/HelperLayout"));
+const HelperHome = lazy(() => import("./pages/helper/HelperHome"));
+const SubmitReport = lazy(() => import("./pages/helper/SubmitReport"));
+const MyReports = lazy(() => import("./pages/helper/MyReports"));
+
+// Admin portal
+const AdminLayout = lazy(() => import("./pages/admin/AdminLayout"));
+const Dashboard = lazy(() => import("./pages/admin/Dashboard"));
+const Reports = lazy(() => import("./pages/admin/Reports"));
+const Workers = lazy(() => import("./pages/admin/Workers"));
+const Analytics = lazy(() => import("./pages/admin/Analytics"));
 
 // Worker portal
-import WorkerLogin from "./pages/worker/WorkerLogin";
-import WorkerLayout from "./pages/worker/WorkerLayout";
-import WorkerDashboard from "./pages/worker/WorkerDashboard";
-import WorkerMapView from "./pages/worker/WorkerMapView";
-import WorkerProfile from "./pages/worker/WorkerProfile";
+const WorkerLayout = lazy(() => import("./pages/worker/WorkerLayout"));
+const WorkerDashboard = lazy(() => import("./pages/worker/WorkerDashboard"));
+const WorkerMapView = lazy(() => import("./pages/worker/WorkerMapView"));
+const WorkerProfile = lazy(() => import("./pages/worker/WorkerProfile"));
 
-function ProtectedRoute({ children, requiredRole }) {
-  const { user, role, authLoading } = useAuth();
-
-  if (authLoading) return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="flex flex-col items-center gap-3">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500" />
-        <p className="text-gray-500 text-sm">Loading...</p>
-      </div>
+function PageLoader() {
+  return (
+    <div className="flex h-screen items-center justify-center bg-slate-900">
+      <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
     </div>
   );
-
-  if (!user) return <Navigate to="/login" replace />;
-  if (requiredRole && role !== requiredRole) return <Navigate to="/login" replace />;
-  return children;
 }
 
-function App() {
+export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <Routes>
-          {/* Public */}
-          <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/worker/login" element={<WorkerLogin />} />
+    <Suspense fallback={<PageLoader />}>
+      <Routes>
+        {/* Landing — role selector */}
+        <Route path="/" element={<Landing />} />
 
-          {/* Admin routes */}
-          <Route path="/dashboard" element={
-            <ProtectedRoute requiredRole="admin"><Dashboard /></ProtectedRoute>
-          } />
-          <Route path="/reports" element={
-            <ProtectedRoute requiredRole="admin"><Reports /></ProtectedRoute>
-          } />
-          <Route path="/analytics" element={
-            <ProtectedRoute requiredRole="admin"><Analytics /></ProtectedRoute>
-          } />
+        {/* Role-specific auth pages */}
+        <Route path="/login/helper" element={<AuthPage role="helper" />} />
+        <Route path="/login/worker" element={<AuthPage role="worker" />} />
+        <Route path="/login/admin" element={<AuthPage role="admin" />} />
 
-          {/* Worker routes — nested under WorkerLayout */}
-          <Route path="/worker" element={
-            <ProtectedRoute requiredRole="worker"><WorkerLayout /></ProtectedRoute>
-          }>
-            <Route path="dashboard" element={<WorkerDashboard />} />
-            <Route path="map" element={<WorkerMapView />} />
-            <Route path="profile" element={<WorkerProfile />} />
-          </Route>
+        {/* SSO callback — handles Google/OAuth redirect */}
+        <Route path="/sso-callback" element={<SSOCallback />} />
 
-          {/* Catch-all */}
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+        {/* Legacy redirects */}
+        <Route path="/login" element={<Navigate to="/" replace />} />
+        <Route path="/signup" element={<Navigate to="/login/helper" replace />} />
+
+        {/* Helper portal */}
+        <Route
+          path="/helper"
+          element={
+            <ProtectedRoute allowedRoles={[ROLES.HELPER]}>
+              <HelperLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="home" replace />} />
+          <Route path="home" element={<HelperHome />} />
+          <Route path="submit" element={<SubmitReport />} />
+          <Route path="my-reports" element={<MyReports />} />
+        </Route>
+
+        {/* Admin portal */}
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
+              <AdminLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="dashboard" replace />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="reports" element={<Reports />} />
+          <Route path="workers" element={<Workers />} />
+          <Route path="analytics" element={<Analytics />} />
+        </Route>
+
+        {/* Worker portal */}
+        <Route
+          path="/worker"
+          element={
+            <ProtectedRoute allowedRoles={[ROLES.WORKER]}>
+              <WorkerLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="dashboard" replace />} />
+          <Route path="dashboard" element={<WorkerDashboard />} />
+          <Route path="map" element={<WorkerMapView />} />
+          <Route path="profile" element={<WorkerProfile />} />
+        </Route>
+
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }
-
-export default App;
