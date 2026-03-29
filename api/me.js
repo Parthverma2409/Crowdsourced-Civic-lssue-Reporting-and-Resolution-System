@@ -27,20 +27,27 @@ export default async function handler(req, res) {
     });
 
     if (!profile) {
-      // Auto-assign admin role if email is in ADMIN_EMAILS env var
-      const adminEmails = (process.env.ADMIN_EMAILS || "")
-        .split(",")
-        .map((e) => e.trim().toLowerCase())
-        .filter(Boolean);
-      const isAdmin = adminEmails.includes((payload.email || "").toLowerCase());
-
-      profile = await prisma.profile.create({
-        data: {
-          id: userId,
-          email: payload.email,
-          role: isAdmin ? "admin" : "helper",
-        },
+      // Check if profile exists by email (for Google OAuth users)
+      profile = await prisma.profile.findFirst({
+        where: { email: payload.email },
       });
+
+      // If still no profile, create one as helper
+      if (!profile) {
+        profile = await prisma.profile.create({
+          data: {
+            id: userId,
+            email: payload.email,
+            role: "helper",
+          },
+        });
+      } else {
+        // Update the profile with correct Clerk userId
+        profile = await prisma.profile.update({
+          where: { id: profile.id },
+          data: { id: userId },
+        });
+      }
     }
 
     return res.status(200).json({
