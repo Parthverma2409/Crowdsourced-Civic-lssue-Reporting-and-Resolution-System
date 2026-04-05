@@ -1,4 +1,4 @@
-# CivicSense — Implementation Plan
+# CivicSense v2.0 — Implementation Plan
 
 ## 1. Overview
 
@@ -11,637 +11,405 @@ A crowdsourced civic issue reporting platform with 3 roles:
 
 | Layer | Tool |
 |---|---|
-| Frontend | React 19 + Vite |
-| Styling | Tailwind CSS + shadcn/ui |
-| Auth | Clerk |
-| Database | Supabase PostgreSQL (via Prisma ORM) |
+| Framework | **Next.js 15** (App Router, React 19) |
+| Styling | Tailwind CSS 3 |
+| Auth | **Supabase Auth** (email/password + Google OAuth) |
+| Database | Supabase PostgreSQL (direct queries via `@supabase/ssr`) |
 | Storage | Supabase Storage (2 buckets) |
-| Realtime | Supabase Realtime |
+| Realtime | Supabase Realtime (postgres_changes) |
 | AI/ML | Google Gemini 1.5 Flash |
 | Email | Resend |
 | Maps | Leaflet + React-Leaflet |
 | Charts | Recharts |
-| Deploy | Vercel (frontend + serverless API) |
+| Deploy | Vercel (Next.js) |
 
-## 3. Architecture Diagram
+### Migration from v1.0
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Helper UI  │     │   Admin UI   │     │  Worker UI   │
-│  (React SPA) │     │  (React SPA) │     │  (React SPA) │
-└──────┬───────┘     └──────┬───────┘     └──────┬───────┘
-       │                    │                    │
-       └────────────┬───────┴────────────────────┘
-                    │
-              ┌─────▼─────┐
-              │   Clerk    │──── Auth + Sessions + OAuth
-              └─────┬──────┘
-                    │ JWT
-              ┌─────▼──────────────────────────────────┐
-              │         Vercel Serverless API           │
-              │  ┌────────────┐  ┌──────────────────┐  │
-              │  │ Prisma ORM │  │ Supabase Storage │  │
-              │  └─────┬──────┘  └────────┬─────────┘  │
-              │        │                  │             │
-              │  ┌─────▼──────────────────▼─────────┐  │
-              │  │     Supabase PostgreSQL           │  │
-              │  │     + PostGIS + Realtime          │  │
-              │  └──────────────────────────────────┘  │
-              │                                        │
-              │  ┌──────────────┐  ┌──────────────┐   │
-              │  │ Gemini AI    │  │   Resend     │   │
-              │  │ (analysis)   │  │   (emails)   │   │
-              │  └──────────────┘  └──────────────┘   │
-              └────────────────────────────────────────┘
-```
+| What changed | Before (v1.0) | After (v2.0) |
+|---|---|---|
+| Framework | React + Vite SPA | Next.js 15 App Router |
+| Auth | Clerk | Supabase Auth |
+| ORM | Prisma | Direct Supabase queries |
+| API | Vercel Serverless (`/api/*.js`) | Next.js Route Handlers (`/app/api/*/route.js`) |
+| Routing | React Router DOM | Next.js file-based routing |
+| Entry point | `index.html` + `src/main.jsx` | `app/layout.jsx` + `app/page.jsx` |
 
-## 4. Auth Flow (Clerk)
+## 3. Architecture
 
 ```
-User visits app
-  ↓
-Clerk <SignIn> / <SignUp> component
-  ↓
-Clerk handles: email/password, Google OAuth, session management
-  ↓
-On signup → Clerk webhook fires → POST /api/clerk-webhook
-  ↓
-Webhook creates row in profiles table (via Prisma):
-  { id: clerk_user_id, full_name, email, role: 'helper' }
-  ↓
-App loads → useUser() (Clerk) + fetch role from profiles table
-  ↓
-ProtectedRoute checks role → routes to correct portal
+Browser
+  │
+  ├─ Landing (/)          → Role selector
+  ├─ /login/helper        → Supabase signUp / signIn
+  ├─ /login/worker        → Supabase signIn only
+  ├─ /login/admin         → Supabase signIn only
+  ├─ /auth/callback       → OAuth redirect handler
+  │
+  ├─ /helper/*            → Citizen portal (submit reports, view status)
+  ├─ /admin/*             → Admin portal (manage reports, workers, analytics)
+  └─ /worker/*            → Worker portal (tasks, map, profile)
+        │
+        ▼
+  Next.js Middleware (middleware.js)
+  → Refreshes Supabase session cookies
+  → Redirects unauthenticated users from protected routes
+        │
+        ▼
+  Next.js API Route Handlers (app/api/*/route.js)
+  → Authenticate via Supabase server client (cookie-based)
+  → Query Supabase PostgreSQL directly
+  → Call Gemini AI, Resend, etc.
+        │
+        ▼
+  Supabase (PostgreSQL + Auth + Storage + Realtime)
 ```
 
-**Role promotion flow:**
-- Admin goes to Workers page → "Add Worker" → creates Clerk user (via Backend API) + sets role to 'worker' in profiles + creates workers row
+## 4. Auth Flow (Supabase)
 
-## 5. Database Schema (Prisma)
-
-```prisma
-// prisma/schema.prisma
-
-generator client {
-  provider = "prisma-client-js"
-}
-
-datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
-}
-
-enum Role {
-  helper
-  admin
-  worker
-}
-
-enum ReportStatus {
-  pending
-  analyzing
-  assigned
-  in_progress
-  resolved
-  duplicate
-  escalated
-}
-
-enum TaskStatus {
-  assigned
-  in_progress
-  completed
-  cancelled
-  escalated
-}
-
-enum Priority {
-  critical
-  high
-  medium
-  low
-}
-
-enum Category {
-  pothole
-  garbage
-  streetlight
-  flooding
-  vandalism
-  other
-}
-
-enum NotificationType {
-  task_assigned
-  task_completed
-  report_update
-  alert
-}
-
-model Profile {
-  id        String   @id // Clerk user ID
-  fullName  String?  @map("full_name")
-  email     String?
-  phone     String?
-  avatarUrl String?  @map("avatar_url")
-  role      Role     @default(helper)
-  createdAt DateTime @default(now()) @map("created_at")
-
-  reports       Report[]
-  worker        Worker?
-  assignedTasks Task[]         @relation("AssignedBy")
-  notifications Notification[]
-
-  @@map("profiles")
-}
-
-model Worker {
-  id                 String    @id // Same as profile ID
-  zone               String?
-  isAvailable        Boolean   @default(true) @map("is_available")
-  currentLat         Float?    @map("current_lat")
-  currentLng         Float?    @map("current_lng")
-  lastLocationUpdate DateTime? @map("last_location_update")
-  activeTaskCount    Int       @default(0) @map("active_task_count")
-  totalCompleted     Int       @default(0) @map("total_completed")
-
-  profile Profile @relation(fields: [id], references: [id], onDelete: Cascade)
-  tasks   Task[]
-
-  @@map("workers")
-}
-
-model Report {
-  id               String       @id @default(uuid())
-  reporterId       String?      @map("reporter_id")
-  title            String
-  description      String?
-  imageUrl         String?      @map("image_url")
-  lat              Float
-  lng              Float
-  address          String?
-  category         Category?
-  status           ReportStatus @default(pending)
-  priority         Priority     @default(medium)
-  aiCategory       String?      @map("ai_category")
-  aiPriority       String?      @map("ai_priority")
-  aiConfidence     Float?       @map("ai_confidence")
-  aiSummary        String?      @map("ai_summary")
-  aiSuggestedAction String?     @map("ai_suggested_action")
-  duplicateOfId    String?      @map("duplicate_of")
-  createdAt        DateTime     @default(now()) @map("created_at")
-  updatedAt        DateTime     @updatedAt @map("updated_at")
-
-  reporter    Profile? @relation(fields: [reporterId], references: [id])
-  duplicateOf Report?  @relation("Duplicates", fields: [duplicateOfId], references: [id])
-  duplicates  Report[] @relation("Duplicates")
-  tasks       Task[]
-  alerts      Alert[]
-
-  @@index([status])
-  @@index([category])
-  @@index([reporterId])
-  @@index([lat, lng])
-  @@map("reports")
-}
-
-model Task {
-  id          String     @id @default(uuid())
-  reportId    String     @map("report_id")
-  workerId    String     @map("worker_id")
-  assignedBy  String?    @map("assigned_by")
-  status      TaskStatus @default(assigned)
-  beforeImage String?    @map("before_image")
-  afterImage  String?    @map("after_image")
-  notes       String?
-  assignedAt  DateTime   @default(now()) @map("assigned_at")
-  startedAt   DateTime?  @map("started_at")
-  completedAt DateTime?  @map("completed_at")
-
-  report      Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  worker      Worker   @relation(fields: [workerId], references: [id])
-  assignedByUser Profile? @relation("AssignedBy", fields: [assignedBy], references: [id])
-
-  @@index([workerId])
-  @@index([reportId])
-  @@map("tasks")
-}
-
-model Notification {
-  id        String           @id @default(uuid())
-  userId    String           @map("user_id")
-  title     String
-  message   String?
-  type      NotificationType
-  isRead    Boolean          @default(false) @map("is_read")
-  metadata  Json?
-  createdAt DateTime         @default(now()) @map("created_at")
-
-  user Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("notifications")
-}
-
-model Alert {
-  id           String   @id @default(uuid())
-  reportId     String   @map("report_id")
-  severity     String?
-  message      String?
-  acknowledged Boolean  @default(false)
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
-
-  @@map("alerts")
-}
+```
+User visits /login/:role
+  ↓
+Email/Password → supabase.auth.signInWithPassword()
+Google OAuth   → supabase.auth.signInWithOAuth({ provider: 'google' })
+Sign up        → supabase.auth.signUp() (helper only)
+  ↓
+Supabase sets session cookies (managed by @supabase/ssr)
+  ↓
+Middleware refreshes session on every request
+  ↓
+AuthContext (client) calls GET /api/me
+  ↓
+/api/me checks auth, finds/creates profile, returns { id, role, fullName, email }
+  ↓
+AuthContext stores user + role in React state
+  ↓
+Portal layouts render based on role
 ```
 
-## 6. Supabase Manual Setup (SQL Editor)
+**Role assignment:**
+- New sign-ups default to `helper` role
+- Workers are created by admin via `/api/create-worker` (uses Supabase Admin API)
+- Admins are bootstrapped via `BOOTSTRAP_ADMIN_EMAILS` env var or direct DB update
 
-Run these AFTER `prisma db push` creates the tables:
+## 5. Database Schema
 
-```sql
--- Enable PostGIS
-CREATE EXTENSION IF NOT EXISTS postgis;
+Tables are created directly in Supabase (no Prisma migrations):
 
--- Enable Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE reports;
-ALTER PUBLICATION supabase_realtime ADD TABLE tasks;
-ALTER PUBLICATION supabase_realtime ADD TABLE workers;
-ALTER PUBLICATION supabase_realtime ADD TABLE notifications;
-```
+### `profiles`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid (PK) | Matches Supabase Auth user ID |
+| full_name | text | |
+| email | text | |
+| phone | text | |
+| avatar_url | text | |
+| role | text | `helper`, `admin`, or `worker` |
+| created_at | timestamptz | |
 
-**Note on RLS:** Since we use Prisma with the Supabase connection string (which uses the `postgres` role, not the anon key), RLS does not apply to server-side Prisma queries. The frontend uses Supabase JS client only for realtime subscriptions — data reads/writes go through our API endpoints which authenticate via Clerk. This is a secure pattern: API validates Clerk JWT → Prisma queries DB with full access → returns only authorized data.
+### `reports`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid (PK) | |
+| reporter_id | uuid (FK → profiles) | |
+| title | text | |
+| description | text | |
+| image_url | text | Supabase Storage URL |
+| lat | float | GPS latitude |
+| lng | float | GPS longitude |
+| address | text | |
+| category | text | pothole, garbage, streetlight, flooding, vandalism, other |
+| status | text | pending, analyzing, assigned, in_progress, resolved, duplicate, escalated |
+| priority | text | critical, high, medium, low |
+| ai_category | text | Gemini-predicted category |
+| ai_priority | text | Gemini-predicted priority |
+| ai_confidence | float | 0-1 confidence score |
+| ai_summary | text | AI-generated description |
+| ai_suggested_action | text | |
+| duplicate_of | uuid (FK → reports) | |
+| created_at | timestamptz | |
+| updated_at | timestamptz | |
 
-## 7. Storage Buckets
+### `workers`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid (PK, FK → profiles) | Same as profile ID |
+| zone | text | Geographic zone assignment |
+| is_available | boolean | |
+| current_lat | float | Live GPS |
+| current_lng | float | Live GPS |
+| last_location_update | timestamptz | |
+| active_task_count | int | |
+| total_completed | int | |
 
-Create in Supabase Dashboard → Storage:
+### `tasks`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid (PK) | |
+| report_id | uuid (FK → reports) | |
+| worker_id | uuid (FK → workers) | |
+| assigned_by | uuid (FK → profiles) | |
+| status | text | assigned, in_progress, completed, cancelled, escalated |
+| before_image | text | |
+| after_image | text | Completion proof photo |
+| notes | text | |
+| assigned_at | timestamptz | |
+| started_at | timestamptz | |
+| completed_at | timestamptz | |
 
-| Bucket | Public | Max Size | MIME Types |
+### `notifications`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid (PK) | |
+| user_id | uuid (FK → profiles) | |
+| title | text | |
+| message | text | |
+| type | text | task_assigned, task_completed, report_update, alert |
+| is_read | boolean | |
+| metadata | jsonb | |
+| created_at | timestamptz | |
+
+### `alerts`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid (PK) | |
+| report_id | uuid (FK → reports) | |
+| severity | text | |
+| message | text | |
+| acknowledged | boolean | |
+| created_at | timestamptz | |
+
+## 6. Storage Buckets
+
+| Bucket | Public | Purpose |
+|---|---|---|
+| `report-images` | Yes | Photos uploaded with issue reports |
+| `completion-images` | Yes | After-photos uploaded by workers |
+
+## 7. API Route Handlers
+
+All routes live under `app/api/*/route.js`:
+
+| Route | Methods | Auth | Purpose |
 |---|---|---|---|
-| `report-images` | Yes | 5MB | image/jpeg, image/png, image/webp |
-| `completion-images` | Yes | 5MB | image/jpeg, image/png, image/webp |
+| `/api/me` | GET | Cookie session | Get/create user profile + role |
+| `/api/reports` | GET, POST, PATCH | Cookie session | CRUD for reports |
+| `/api/tasks` | GET, PATCH | Cookie session | Read/update tasks + trigger completion flow |
+| `/api/workers` | GET, PATCH | Cookie session | Read/update workers |
+| `/api/notifications` | GET, PATCH | Cookie session | Read/mark notifications |
+| `/api/create-worker` | POST | Cookie session (admin) | Create Supabase user + worker profile |
+| `/api/update-role` | POST | Cookie session (admin) | Change a user's role |
+| `/api/analyze-report` | POST | Cookie session | Send to Gemini AI for analysis |
+| `/api/check-duplicate` | POST | Cookie session | Spatial duplicate detection |
+| `/api/auto-assign` | POST | Cookie session | Hybrid worker assignment algorithm |
+| `/api/send-completion-email` | POST | Internal | Send emails via Resend on task completion |
+| `/auth/callback` | GET | — | OAuth redirect handler |
 
-Storage policies (SQL editor):
-```sql
-CREATE POLICY "Anyone can upload report images"
-  ON storage.objects FOR INSERT
-  WITH CHECK (bucket_id = 'report-images');
-
-CREATE POLICY "Anyone can view report images"
-  ON storage.objects FOR SELECT
-  USING (bucket_id = 'report-images');
-
-CREATE POLICY "Anyone can upload completion images"
-  ON storage.objects FOR INSERT
-  WITH CHECK (bucket_id = 'completion-images');
-
-CREATE POLICY "Anyone can view completion images"
-  ON storage.objects FOR SELECT
-  USING (bucket_id = 'completion-images');
-```
-
-## 8. API Endpoints (Vercel Serverless)
-
-| Endpoint | Method | Auth | Purpose |
-|---|---|---|---|
-| `/api/clerk-webhook` | POST | Clerk webhook secret | Sync new users → profiles table |
-| `/api/analyze-report` | POST | Clerk JWT | Send image to Gemini → AI analysis |
-| `/api/check-duplicate` | POST | Clerk JWT | Detect duplicate reports within 100m |
-| `/api/auto-assign` | POST | Clerk JWT | Hybrid worker assignment algorithm |
-| `/api/create-worker` | POST | Clerk JWT (admin) | Create Clerk user + worker profile |
-| `/api/send-completion-email` | POST | Internal | Resend email to admin + helper on task completion |
-| `/api/reports` | GET/POST | Clerk JWT | CRUD for reports |
-| `/api/tasks` | GET/PATCH | Clerk JWT | Read + update tasks |
-| `/api/workers` | GET/PATCH | Clerk JWT | Read + update workers |
-| `/api/notifications` | GET/PATCH | Clerk JWT | Read + mark notifications |
-
-## 9. AI Pipeline
+## 8. AI Pipeline
 
 ```
-Helper submits report
+Helper submits report → POST /api/reports (status: pending)
   ↓
-POST /api/reports (creates report, status: 'pending')
+Admin clicks "Run AI Analysis" → POST /api/analyze-report
   ↓
-POST /api/analyze-report { reportId, imageUrl, description }
+  ├─ Status → 'analyzing'
+  ├─ Image + text → Gemini 1.5 Flash
+  ├─ Response: { category, priority, confidence, summary, suggestedAction }
+  ├─ Updates report ai_* fields
+  ├─ If critical → creates Alert
+  └─ Status → 'pending' (ready for assignment)
   ↓
-  ├─ Updates report status → 'analyzing'
-  ├─ Sends image + text to Gemini 1.5 Flash
-  ├─ Gemini returns: { category, priority, confidence, summary, suggestedAction }
-  ├─ Updates report with ai_* fields
-  ├─ If priority === 'critical' → creates Alert
-  └─ Updates report status → 'pending' (ready for assignment)
-  ↓
-POST /api/check-duplicate { reportId, lat, lng, category }
-  ↓
-  ├─ Queries reports within ~100m, same category, non-resolved
-  ├─ If duplicate → marks report status: 'duplicate', links to original
-  └─ If not duplicate → continues
-  ↓
-POST /api/auto-assign { reportId }
+Admin clicks "Auto-Assign" → POST /api/auto-assign
   ↓
   ├─ Queries available workers
   ├─ Scores: 50% proximity + 30% workload + 20% zone
-  ├─ Creates task (status: 'assigned')
-  ├─ Updates report status → 'assigned'
-  ├─ Increments worker active_task_count
+  ├─ Creates task, updates report status → 'assigned'
   └─ Creates notification for worker
 ```
 
-## 10. Worker Assignment Algorithm
+## 9. Worker Assignment Algorithm
 
 ```
 Score(worker) = 0.5 * proximityScore + 0.3 * workloadScore + 0.2 * zoneScore
 
 Where:
-  proximityScore = 1 / (1 + haversineDistance(worker, report))  // in km
+  proximityScore = 1 / (1 + haversineDistance(worker, report))
   workloadScore  = 1 / (1 + worker.activeTaskCount)
   zoneScore      = worker.zone matches report area ? 1.0 : 0.0
 
 Filters:
   - is_available = true
-  - last_location_update within 1 hour (skip stale locations)
+  - last_location_update within 1 hour
 
-Tiebreak: fewer total_completed (spread experience)
 Fallback: if no workers available → status stays 'pending', admin notified
 ```
 
-## 11. Email Integration (Resend)
-
-**Trigger:** Worker marks task as completed → `/api/send-completion-email`
-
-**Email 1 → Admin:**
-```
-Subject: Task Completed: {report.title}
-Body: Worker {worker.name} resolved "{report.title}" in zone {worker.zone}.
-      Category: {report.category} | Priority: {report.priority}
-      Completion photo: {task.afterImage}
-```
-
-**Email 2 → Helper (original reporter):**
-```
-Subject: Your reported issue has been resolved!
-Body: Great news! The issue you reported — "{report.title}" — has been
-      resolved by our field team.
-      Resolution photo: {task.afterImage}
-      Thank you for helping improve your community!
-```
-
-## 12. Component Architecture
+## 10. Project Structure
 
 ```
-src/
-├── main.jsx                     # Entry: ClerkProvider + Router
-├── App.jsx                      # Routes + ProtectedRoute
-├── index.css                    # Tailwind base
+civicsense/
+├── app/                        # Next.js App Router
+│   ├── layout.jsx              # Root layout (AuthProvider)
+│   ├── page.jsx                # Landing page (role selector)
+│   ├── globals.css             # Tailwind base
+│   │
+│   ├── login/
+│   │   ├── AuthPage.jsx        # Shared Supabase auth UI
+│   │   ├── helper/page.jsx     # → AuthPage role="helper"
+│   │   ├── worker/page.jsx     # → AuthPage role="worker"
+│   │   └── admin/page.jsx      # → AuthPage role="admin"
+│   │
+│   ├── auth/
+│   │   └── callback/route.js   # OAuth code exchange
+│   │
+│   ├── helper/                 # Citizen portal
+│   │   ├── layout.jsx          # Sidebar + Navbar shell
+│   │   ├── page.jsx            # Redirect → /helper/home
+│   │   ├── home/page.jsx       # Dashboard, recent reports, stats
+│   │   ├── submit/page.jsx     # Camera + GPS + report form
+│   │   └── my-reports/page.jsx # List of user's reports
+│   │
+│   ├── admin/                  # Admin portal
+│   │   ├── layout.jsx          # Sidebar + Navbar shell
+│   │   ├── page.jsx            # Redirect → /admin/dashboard
+│   │   ├── dashboard/page.jsx  # Stats, charts, map, worker overview
+│   │   ├── reports/page.jsx    # Filterable report list + AI/assign actions
+│   │   ├── workers/page.jsx    # Worker cards + create worker modal
+│   │   └── analytics/page.jsx  # Charts, resolution rate, trends
+│   │
+│   ├── worker/                 # Field worker portal
+│   │   ├── layout.jsx          # Dark-themed sidebar + navbar
+│   │   ├── page.jsx            # Redirect → /worker/dashboard
+│   │   ├── dashboard/page.jsx  # Task list with start/complete/escalate
+│   │   ├── map/
+│   │   │   ├── page.jsx        # Map wrapper (dynamic import)
+│   │   │   └── MapContent.jsx  # Leaflet map (client-only)
+│   │   └── profile/page.jsx    # Profile info + availability toggle
+│   │
+│   └── api/                    # Route handlers (11 endpoints)
+│       ├── me/route.js
+│       ├── reports/route.js
+│       ├── tasks/route.js
+│       ├── workers/route.js
+│       ├── notifications/route.js
+│       ├── create-worker/route.js
+│       ├── update-role/route.js
+│       ├── analyze-report/route.js
+│       ├── check-duplicate/route.js
+│       ├── auto-assign/route.js
+│       └── send-completion-email/route.js
 │
-├── lib/
-│   ├── supabase.js              # Supabase client (realtime + storage only)
-│   ├── prisma.js                # Prisma client (for API routes)
-│   ├── constants.js             # Enums, config values
-│   └── utils.js                 # cn(), formatDate, haversine, etc.
+├── components/                 # Shared UI components
+│   ├── camera/GeoCamera.jsx    # Camera capture + file upload
+│   ├── charts/
+│   │   ├── CategoryPie.jsx     # Recharts pie chart
+│   │   ├── PriorityBar.jsx     # Recharts bar chart
+│   │   ├── Timeline.jsx        # 7-day area chart
+│   │   └── DepartmentPerf.jsx  # Resolution rate by category
+│   ├── layout/
+│   │   ├── Navbar.jsx          # Top bar (role-themed)
+│   │   └── Sidebar.jsx         # Side navigation (role-themed)
+│   └── maps/
+│       └── ReportMap.jsx       # Leaflet map for report pins
 │
 ├── context/
-│   └── AuthContext.jsx           # Clerk useUser() + role from DB
+│   └── AuthContext.jsx         # Supabase session + role provider
 │
-├── hooks/
-│   ├── useReports.js             # Fetch reports via API + realtime sub
-│   ├── useWorkers.js             # Fetch workers via API + realtime sub
-│   ├── useWorkerTasks.js         # Worker's tasks + realtime
-│   ├── useNotifications.js       # Notifications + realtime
-│   ├── useGeolocation.js         # GPS position
-│   └── useCamera.js              # Camera capture
+├── hooks/                      # Client-side data hooks
+│   ├── useReports.js           # Fetch + realtime reports
+│   ├── useWorkers.js           # Fetch + realtime workers
+│   ├── useWorkerTasks.js       # Fetch + realtime tasks
+│   ├── useNotifications.js     # Fetch + realtime notifications
+│   ├── useGeolocation.js       # Browser GPS
+│   └── useCamera.js            # Camera stream + capture
 │
-├── components/
-│   ├── ui/                       # shadcn/ui components
-│   │   ├── button.jsx
-│   │   ├── card.jsx
-│   │   ├── badge.jsx
-│   │   ├── dialog.jsx
-│   │   ├── input.jsx
-│   │   ├── select.jsx
-│   │   ├── avatar.jsx
-│   │   ├── dropdown-menu.jsx
-│   │   ├── table.jsx
-│   │   ├── switch.jsx
-│   │   ├── separator.jsx
-│   │   └── skeleton.jsx
-│   ├── layout/
-│   │   ├── Navbar.jsx
-│   │   ├── Sidebar.jsx
-│   │   └── ProtectedRoute.jsx
-│   ├── camera/
-│   │   └── GeoCamera.jsx
-│   ├── maps/
-│   │   └── ReportMap.jsx
-│   └── charts/
-│       ├── CategoryPie.jsx
-│       ├── PriorityBar.jsx
-│       ├── Timeline.jsx
-│       └── DepartmentPerf.jsx
+├── lib/
+│   ├── constants.js            # Enums, colors, config values
+│   ├── utils.js                # cn(), timeAgo, haversine, uploadToSupabase
+│   └── supabase/
+│       ├── client.js           # Browser client (createBrowserClient)
+│       ├── server.js           # Server client (createServerClient + cookies)
+│       ├── admin.js            # Service role client (admin operations)
+│       └── middleware.js        # Session refresh middleware
 │
-├── pages/
-│   ├── Login.jsx                 # Clerk <SignIn>
-│   ├── SignUp.jsx                # Clerk <SignUp>
-│   │
-│   ├── helper/
-│   │   ├── HelperLayout.jsx
-│   │   ├── HelperHome.jsx
-│   │   ├── SubmitReport.jsx
-│   │   └── MyReports.jsx
-│   │
-│   ├── admin/
-│   │   ├── AdminLayout.jsx
-│   │   ├── Dashboard.jsx
-│   │   ├── Reports.jsx
-│   │   ├── Workers.jsx
-│   │   └── Analytics.jsx
-│   │
-│   └── worker/
-│       ├── WorkerLayout.jsx
-│       ├── WorkerDashboard.jsx
-│       ├── WorkerMapView.jsx
-│       └── WorkerProfile.jsx
-│
-api/                              # Vercel serverless (project root)
-├── clerk-webhook.js
-├── analyze-report.js
-├── check-duplicate.js
-├── auto-assign.js
-├── create-worker.js
-├── send-completion-email.js
-├── reports.js
-├── tasks.js
-├── workers.js
-└── notifications.js
+├── middleware.js               # Next.js middleware (session refresh + route protection)
+├── next.config.js              # Image domains, etc.
+├── tailwind.config.js          # Tailwind content paths + theme
+├── postcss.config.mjs          # PostCSS plugins
+├── jsconfig.json               # @ path alias
+└── package.json                # Next.js 15, React 19, Supabase, etc.
 ```
 
-## 13. Environment Variables
+## 11. Environment Variables
 
-### `.env.local` (local dev)
-```
-# Clerk
-VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
-CLERK_SECRET_KEY=sk_test_...
-CLERK_WEBHOOK_SECRET=whsec_...
-
-# Supabase
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=eyJ...
-
-# Prisma (Supabase Postgres)
-DATABASE_URL=postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres?pgbouncer=true
-DIRECT_URL=postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres
-
-# Gemini AI
-GEMINI_API_KEY=your-gemini-key
-
-# Resend
-RESEND_API_KEY=re_...
-```
-
-### Vercel Environment Variables (Dashboard)
-Same as above, set for Production + Preview + Development environments.
-
-## 14. New Dependencies
+All in `.env.local` (gitignored):
 
 ```bash
-# Remove (no longer needed)
-npm uninstall firebase @supabase/supabase-js  # keep supabase for realtime+storage
-npm uninstall jotai  # not used
+# Supabase (required)
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
+SUPABASE_SERVICE_ROLE_KEY=eyJ...   # For admin operations (create-worker)
 
-# Add
-npm install @clerk/clerk-react                 # Auth frontend
-npm install prisma @prisma/client              # ORM
-npm install resend                             # Email
-npm install svix                               # Clerk webhook verification
+# Google Gemini AI
+GEMINI_API_KEY=your-gemini-key
 
-# shadcn/ui (requires)
-npx shadcn@latest init
-npx shadcn@latest add button card badge dialog input select avatar dropdown-menu table switch separator skeleton
+# Resend Email
+RESEND_API_KEY=re_...
+
+# Admin bootstrap
+ADMIN_EMAILS=admin@example.com
+BOOTSTRAP_ADMIN_EMAILS=admin@example.com
+BOOTSTRAP_WORKER_EMAILS=worker@example.com
 ```
 
-## 15. Build Order
+## 12. Key Flows
 
-### P0: Foundation
-1. Install dependencies (Clerk, Prisma, Resend, shadcn)
-2. Configure shadcn/ui (`components.json`, `cn()` utility)
-3. Write `prisma/schema.prisma`
-4. Run `prisma db push` to create Supabase tables
-5. Run manual SQL (PostGIS, Realtime, Storage policies)
-6. Create storage buckets in Supabase dashboard
-7. Configure Clerk project (Google OAuth, webhook endpoint)
-8. Wire `.env.local` with all keys
-9. `src/lib/supabase.js` — Supabase client (realtime + storage)
-10. `src/lib/utils.js` — cn(), helpers
-11. `src/lib/constants.js` — enums, config
-12. `src/context/AuthContext.jsx` — Clerk + role lookup
-13. `src/main.jsx` — ClerkProvider + BrowserRouter
-14. `src/App.jsx` — routes + lazy loading
-15. `src/components/layout/ProtectedRoute.jsx`
-16. `api/clerk-webhook.js` — user sync
+### Helper: Submit Report
+1. Opens camera or uploads photo → `GeoCamera` component
+2. Browser GPS auto-captures coordinates → `useGeolocation` hook
+3. Fills title, description, category
+4. Photo uploads to `report-images` bucket via `uploadToSupabase()`
+5. `POST /api/reports` creates report (status: pending)
+6. Redirected to My Reports page
+7. Realtime subscription updates status in real-time
 
-### P1: UI Shell
-17. shadcn/ui components (init + add all)
-18. `src/components/layout/Navbar.jsx` — Clerk UserButton
-19. `src/components/layout/Sidebar.jsx`
-20. `HelperLayout.jsx`, `AdminLayout.jsx`, `WorkerLayout.jsx`
-21. `Login.jsx` (Clerk `<SignIn>`), `SignUp.jsx` (Clerk `<SignUp>`)
+### Admin: Process Report
+1. Views all reports on `/admin/reports` with status/category filters
+2. Clicks "Run AI Analysis" → Gemini analyzes image + text
+3. AI populates category, priority, summary, suggested action
+4. Clicks "Auto-Assign Worker" → algorithm scores available workers
+5. Task created, worker notified, report status → assigned
+6. Monitors progress on dashboard with charts + map
 
-### P2: Helper Flow
-22. `src/hooks/useGeolocation.js`
-23. `src/hooks/useCamera.js`
-24. `src/components/camera/GeoCamera.jsx`
-25. `src/pages/helper/SubmitReport.jsx` + `api/reports.js` POST
-26. `src/pages/helper/MyReports.jsx` + `api/reports.js` GET
-27. `src/pages/helper/HelperHome.jsx`
-28. `src/hooks/useReports.js` (API fetch + Supabase realtime)
+### Worker: Complete Task
+1. Views assigned tasks on `/worker/dashboard`
+2. Clicks "Start Task" → status: in_progress
+3. Clicks "Navigate" → opens Google Maps directions
+4. On-site: clicks "Mark Complete" → uploads after-photo
+5. Task completed → report resolved → worker stats updated
+6. Completion email sent to admin + original reporter
+7. Can escalate if unable to resolve
 
-### P3: Admin Reports + Workers
-29. `api/reports.js` GET (all, filtered)
-30. `src/pages/admin/Reports.jsx`
-31. `api/create-worker.js`
-32. `src/pages/admin/Workers.jsx`
-33. `src/hooks/useWorkers.js`
+## 13. Realtime Subscriptions
 
-### P4: AI Pipeline
-34. `api/analyze-report.js` — Gemini integration
-35. `api/check-duplicate.js` — PostGIS spatial query
-36. `api/auto-assign.js` — hybrid scoring algorithm
+All hooks subscribe to Supabase postgres_changes:
+- `useReports` → listens on `reports` table
+- `useWorkers` → listens on `workers` table
+- `useWorkerTasks` → listens on `tasks` table (filtered by worker_id)
+- `useNotifications` → listens on `notifications` table (filtered by user_id)
 
-### P5: Worker Portal
-37. `src/hooks/useWorkerTasks.js`
-38. `api/tasks.js` GET/PATCH
-39. `src/pages/worker/WorkerDashboard.jsx`
-40. `src/components/maps/ReportMap.jsx` (shared)
-41. `src/pages/worker/WorkerMapView.jsx` — GPS tracking + task markers
-42. `src/pages/worker/WorkerProfile.jsx` — availability toggle
-43. `api/workers.js` PATCH (location update, availability)
+## 14. Security Model
 
-### P6: Admin Dashboard + Analytics
-44. `src/components/charts/CategoryPie.jsx`
-45. `src/components/charts/PriorityBar.jsx`
-46. `src/components/charts/Timeline.jsx`
-47. `src/components/charts/DepartmentPerf.jsx`
-48. `src/pages/admin/Dashboard.jsx`
-49. `src/pages/admin/Analytics.jsx`
+- **Auth**: Supabase manages sessions via HTTP-only cookies
+- **Middleware**: Refreshes session on every request, redirects unauthenticated users
+- **API routes**: Every handler calls `supabase.auth.getUser()` to verify auth
+- **Admin operations**: `create-worker` and `update-role` use `SUPABASE_SERVICE_ROLE_KEY`
+- **Storage**: Public buckets for report/completion images (no PII)
+- **No RLS needed**: Frontend never queries DB directly; all data flows through authenticated API routes
 
-### P7: Emails + Notifications
-50. `api/send-completion-email.js` — Resend integration
-51. Wire completion email into task completion flow
-52. `src/hooks/useNotifications.js`
-53. `api/notifications.js` GET/PATCH
-54. Notification bell in Navbar
+## 15. Deployment (Vercel)
 
-### P8: Polish
-55. Error boundaries (React ErrorBoundary component)
-56. Code splitting (React.lazy for each portal)
-57. Loading skeletons (shadcn Skeleton)
-58. Unit tests (Vitest) for hooks + utils
-59. Integration tests for API endpoints
-60. Component tests for key flows
-
-## 16. Testing Strategy
-
-**Framework:** Vitest + React Testing Library
-
-```
-tests/
-├── unit/
-│   ├── utils.test.js          # haversine, cn, formatDate
-│   ├── constants.test.js      # enum validation
-│   └── hooks/
-│       ├── useReports.test.js
-│       └── useGeolocation.test.js
-├── integration/
-│   ├── api/
-│   │   ├── analyze-report.test.js
-│   │   ├── auto-assign.test.js
-│   │   └── clerk-webhook.test.js
-│   └── flows/
-│       ├── submit-report.test.js
-│       └── complete-task.test.js
-└── components/
-    ├── GeoCamera.test.jsx
-    ├── ReportMap.test.jsx
-    └── ProtectedRoute.test.jsx
-```
-
-## 17. Decision Log
-
-| # | Decision | Alternatives | Why |
-|---|---|---|---|
-| D1 | Clerk for auth | Supabase Auth | Polished UI, role mgmt, webhooks, Google OAuth out-of-box |
-| D2 | Prisma for schema | Raw SQL | Type-safe, version-controlled schema, migrations |
-| D3 | shadcn/ui for components | Custom UI components | Production-quality, accessible, consistent design |
-| D4 | Resend for emails | SendGrid, Nodemailer | Simple API, great DX, generous free tier |
-| D5 | Supabase client for realtime only | Prisma for everything | Prisma doesn't support Postgres realtime subscriptions |
-| D6 | Hybrid worker assignment | Pure proximity / Round-robin | Balances proximity, workload, and zone coverage |
-| D7 | Async AI analysis | Synchronous | Avoids Vercel timeout, better UX |
-| D8 | PostGIS for spatial | Manual haversine in SQL | Proper indexing, `ST_DWithin` for duplicates |
-| D9 | Two storage buckets | One bucket with folders | Clean separation, independent policies |
-| D10 | No RLS (API-gated) | Full RLS policies | Frontend never hits DB directly; API validates Clerk JWT |
-| D11 | Continuous GPS for workers | Manual location update | More realistic for assignment algorithm |
-| D12 | Vitest for tests | Jest | Native Vite support, faster |
+1. Connect GitHub repo to Vercel
+2. Framework: Next.js (auto-detected)
+3. Set environment variables in Vercel dashboard
+4. Enable Supabase Google OAuth redirect URL: `https://your-domain.vercel.app/auth/callback`
+5. Deploy — zero config needed
