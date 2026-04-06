@@ -1,14 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Home, Camera, FileText } from "lucide-react";
+import { Home, Camera, FileText, Trophy } from "lucide-react";
 import Navbar from "@/components/layout/Navbar";
 import Sidebar from "@/components/layout/Sidebar";
 
 const links = [
-  { to: "/helper/home", label: "Home", icon: Home },
-  { to: "/helper/submit", label: "Report Issue", icon: Camera },
-  { to: "/helper/my-reports", label: "My Reports", icon: FileText },
+  { to: "/helper/home",        label: "Home",        icon: Home },
+  { to: "/helper/submit",      label: "Report Issue", icon: Camera },
+  { to: "/helper/my-reports",  label: "My Reports",  icon: FileText },
+  { to: "/helper/leaderboard", label: "Leaderboard", icon: Trophy },
 ];
 
 export default function HelperLayout({ children }) {

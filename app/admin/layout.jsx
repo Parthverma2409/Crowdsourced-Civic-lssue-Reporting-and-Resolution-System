@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { LayoutDashboard, FileText, Users, BarChart3 } from "lucide-react";
+import { LayoutDashboard, FileText, Users, BarChart3, Megaphone, Wrench } from "lucide-react";
 import Navbar from "@/components/layout/Navbar";
 import Sidebar from "@/components/layout/Sidebar";
 
@@ -9,7 +9,9 @@ const links = [
   { to: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/admin/reports", label: "Reports", icon: FileText },
   { to: "/admin/workers", label: "Workers", icon: Users },
-  { to: "/admin/analytics", label: "Analytics", icon: BarChart3 },
+  { to: "/admin/analytics",   label: "Analytics",   icon: BarChart3 },
+  { to: "/admin/community",   label: "Community",   icon: Megaphone },
+  { to: "/admin/maintenance", label: "Maintenance", icon: Wrench },
 ];
 
 export default function AdminLayout({ children }) {
