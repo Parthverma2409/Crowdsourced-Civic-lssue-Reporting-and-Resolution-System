@@ -70,7 +70,7 @@ export async function PATCH(request) {
   if (body.ai_priority) updateData.ai_priority = body.ai_priority;
   if (body.ai_confidence !== undefined) updateData.ai_confidence = body.ai_confidence;
   if (body.ai_suggested_action) updateData.ai_suggested_action = body.ai_suggested_action;
-  if (body.duplicate_of) updateData.duplicate_of_id = body.duplicate_of;
+  if (body.duplicate_of) updateData.duplicate_of = body.duplicate_of;
 
   const { data, error } = await supabase
     .from("reports")

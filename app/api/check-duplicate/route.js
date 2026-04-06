@@ -28,7 +28,7 @@ export async function POST(request) {
     if (nearby && nearby.length > 0) {
       await supabase.from("reports").update({
         status: "duplicate",
-        duplicate_of_id: nearby[0].id,
+        duplicate_of: nearby[0].id,
       }).eq("id", reportId);
 
       return NextResponse.json({ isDuplicate: true, duplicateOf: nearby[0].id });
